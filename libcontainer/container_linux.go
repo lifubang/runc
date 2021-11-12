@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/checkpoint-restore/go-criu/v5"
@@ -323,6 +324,10 @@ func handleFifoResult(result openResult) error {
 	f := result.file
 	defer f.Close()
 	if err := readFromExecFifo(f); err != nil {
+		return err
+	}
+
+	if err := unix.Kill(unix.Getppid(), syscall.SIGUSR2); err != nil {
 		return err
 	}
 	return os.Remove(f.Name())
