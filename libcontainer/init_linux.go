@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -377,7 +378,7 @@ func setupUser(config *initConfig) error {
 	if allowSupGroups {
 		suppGroups := append(execUser.Sgids, addGroups...)
 		if err := unix.Setgroups(suppGroups); err != nil {
-			return err
+			return &os.SyscallError{Syscall: "setgroups", Err: err}
 		}
 	}
 
@@ -403,7 +404,7 @@ func setupUser(config *initConfig) error {
 func fixStdioPermissions(config *initConfig, u *user.ExecUser) error {
 	var null unix.Stat_t
 	if err := unix.Stat("/dev/null", &null); err != nil {
-		return err
+		return &os.PathError{Op: "stat", Path: "/dev/null", Err: err}
 	}
 	for _, fd := range []uintptr{
 		os.Stdin.Fd(),
@@ -412,7 +413,7 @@ func fixStdioPermissions(config *initConfig, u *user.ExecUser) error {
 	} {
 		var s unix.Stat_t
 		if err := unix.Fstat(int(fd), &s); err != nil {
-			return err
+			return &os.PathError{Op: "fstat", Path: "fd " + strconv.Itoa(int(fd)), Err: err}
 		}
 
 		// Skip chown of /dev/null if it was used as one of the STDIO fds.
@@ -438,7 +439,7 @@ func fixStdioPermissions(config *initConfig, u *user.ExecUser) error {
 			if err == unix.EINVAL || err == unix.EPERM {
 				continue
 			}
-			return err
+			return &os.PathError{Op: "fchown", Path: "fd " + strconv.Itoa(int(fd)), Err: err}
 		}
 	}
 	return nil
@@ -492,7 +493,7 @@ func setupRoute(config *configs.Config) error {
 
 func setupRlimits(limits []configs.Rlimit, pid int) error {
 	for _, rlimit := range limits {
-		if err := system.Prlimit(pid, rlimit.Type, unix.Rlimit{Max: rlimit.Hard, Cur: rlimit.Soft}); err != nil {
+		if err := unix.Prlimit(pid, rlimit.Type, &unix.Rlimit{Max: rlimit.Hard, Cur: rlimit.Soft}, nil); err != nil {
 			return fmt.Errorf("error setting rlimit type %v: %w", rlimit.Type, err)
 		}
 	}
@@ -518,7 +519,7 @@ func isWaitable(pid int) (bool, error) {
 	si := &siginfo{}
 	_, _, e := unix.Syscall6(unix.SYS_WAITID, _P_PID, uintptr(pid), uintptr(unsafe.Pointer(si)), unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, 0, 0)
 	if e != 0 {
-		return false, os.NewSyscallError("waitid", e)
+		return false, &os.SyscallError{Syscall: "waitid", Err: e}
 	}
 
 	return si.si_pid != 0, nil

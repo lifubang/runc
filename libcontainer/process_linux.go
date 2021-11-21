@@ -516,7 +516,7 @@ func (p *initProcess) start() (retErr error) {
 					}
 				}
 
-				if p.config.Config.Hooks != nil {
+				if len(p.config.Config.Hooks) != 0 {
 					s, err := p.container.currentOCIState()
 					if err != nil {
 						return err
@@ -571,7 +571,7 @@ func (p *initProcess) start() (retErr error) {
 					return fmt.Errorf("error setting Intel RDT config for procHooks process: %w", err)
 				}
 			}
-			if p.config.Config.Hooks != nil {
+			if len(p.config.Config.Hooks) != 0 {
 				s, err := p.container.currentOCIState()
 				if err != nil {
 					return err
@@ -793,7 +793,7 @@ func (p *Process) InitializeIO(rootuid, rootgid int) (i *IO, err error) {
 	// change ownership of the pipes in case we are in a user namespace
 	for _, fd := range fds {
 		if err := unix.Fchown(int(fd), rootuid, rootgid); err != nil {
-			return nil, err
+			return nil, &os.PathError{Op: "fchown", Path: "fd " + strconv.Itoa(int(fd)), Err: err}
 		}
 	}
 	return i, nil
