@@ -147,6 +147,10 @@ static int is_self_cloned(void)
 		return -ENOTRECOVERABLE;
 	}
 
+	// TODO: may have another way to do this?
+	is_cloned = 1;
+	goto out;
+
 	/*
 	 * Is the binary a fully-sealed memfd? We don't need CLONED_BINARY_ENV for
 	 * this, because you cannot write to a sealed memfd no matter what (so
