@@ -164,15 +164,16 @@ func prepareRootfs(pipe io.ReadWriter, iConfig *initConfig, mountFds []int) (err
 // finalizeRootfs sets anything to ro if necessary. You must call
 // prepareRootfs first.
 func finalizeRootfs(config *configs.Config) (err error) {
-	// remount dev as ro if specified
+	// All tmpfs mounts and /dev were previously mounted as rw
+	// by mountPropagate. Remount them read-only as requested.
 	for _, m := range config.Mounts {
-		if utils.CleanPath(m.Destination) == "/dev" {
-			if m.Flags&unix.MS_RDONLY == unix.MS_RDONLY {
-				if err := remountReadonly(m); err != nil {
-					return err
-				}
+		if m.Flags&unix.MS_RDONLY != unix.MS_RDONLY {
+			continue
+		}
+		if m.Device == "tmpfs" || utils.CleanPath(m.Destination) == "/dev" {
+			if err := remountReadonly(m); err != nil {
+				return err
 			}
-			break
 		}
 	}
 
@@ -452,12 +453,6 @@ func mountToRootfs(m *configs.Mount, c *mountConfig) error {
 				return err
 			}
 		}
-		// Initially mounted rw in mountPropagate, remount to ro if flag set.
-		if m.Flags&unix.MS_RDONLY != 0 {
-			if err := remount(m, rootfs, mountFd); err != nil {
-				return err
-			}
-		}
 		return nil
 	case "bind":
 		if err := prepareBindMount(m, rootfs, mountFd); err != nil {
@@ -497,6 +492,9 @@ func mountToRootfs(m *configs.Mount, c *mountConfig) error {
 			return err
 		}
 		return mountPropagate(m, rootfs, mountLabel, mountFd)
+	}
+	if err := setRecAttr(m, rootfs); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1065,7 +1063,22 @@ func remount(m *configs.Mount, rootfs string, mountFd *int) error {
 	}
 
 	return utils.WithProcfd(rootfs, m.Destination, func(procfd string) error {
-		return mount(source, m.Destination, procfd, m.Device, uintptr(m.Flags|unix.MS_REMOUNT), "")
+		flags := uintptr(m.Flags | unix.MS_REMOUNT)
+		err := mount(source, m.Destination, procfd, m.Device, flags, "")
+		if err == nil {
+			return nil
+		}
+		// Check if the source has ro flag...
+		var s unix.Statfs_t
+		if err := unix.Statfs(source, &s); err != nil {
+			return &os.PathError{Op: "statfs", Path: source, Err: err}
+		}
+		if s.Flags&unix.MS_RDONLY != unix.MS_RDONLY {
+			return err
+		}
+		// ... and retry the mount with ro flag set.
+		flags |= unix.MS_RDONLY
+		return mount(source, m.Destination, procfd, m.Device, flags, "")
 	})
 }
 
@@ -1077,10 +1090,10 @@ func mountPropagate(m *configs.Mount, rootfs string, mountLabel string, mountFd 
 		flags = m.Flags
 	)
 	// Delay mounting the filesystem read-only if we need to do further
-	// operations on it. We need to set up files in "/dev" and tmpfs mounts may
-	// need to be chmod-ed after mounting. The mount will be remounted ro later
-	// in finalizeRootfs() if necessary.
-	if utils.CleanPath(m.Destination) == "/dev" || m.Device == "tmpfs" {
+	// operations on it. We need to set up files in "/dev", and other tmpfs
+	// mounts may need to be chmod-ed after mounting. These mounts will be
+	// remounted ro later in finalizeRootfs(), if necessary.
+	if m.Device == "tmpfs" || utils.CleanPath(m.Destination) == "/dev" {
 		flags &= ^unix.MS_RDONLY
 	}
 
@@ -1112,4 +1125,13 @@ func mountPropagate(m *configs.Mount, rootfs string, mountLabel string, mountFd 
 		return fmt.Errorf("change mount propagation through procfd: %w", err)
 	}
 	return nil
+}
+
+func setRecAttr(m *configs.Mount, rootfs string) error {
+	if m.RecAttr == nil {
+		return nil
+	}
+	return utils.WithProcfd(rootfs, m.Destination, func(procfd string) error {
+		return unix.MountSetattr(-1, procfd, unix.AT_RECURSIVE, m.RecAttr)
+	})
 }

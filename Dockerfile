@@ -1,6 +1,6 @@
 ARG GO_VERSION=1.17
 ARG BATS_VERSION=v1.3.0
-ARG LIBSECCOMP_VERSION=2.5.2
+ARG LIBSECCOMP_VERSION=2.5.3
 
 FROM golang:${GO_VERSION}-bullseye
 ARG DEBIAN_FRONTEND=noninteractive
@@ -31,6 +31,7 @@ RUN KEYFILE=/usr/share/keyrings/criu-repo-keyring.gpg; \
         kmod \
         pkg-config \
         python3-minimal \
+        sshfs \
         sudo \
         uidmap \
     && apt-get clean \
