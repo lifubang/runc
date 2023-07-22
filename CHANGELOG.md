@@ -4,7 +4,87 @@ This file documents all notable changes made to this project since runc 1.0.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased 1.1.z]
+## [Unreleased 1.2.z]
+
+## [1.2.0-rc.0] - 2023-08-01
+
+> No pains, no gains.
+
+### Deprecated
+
+* `runc kill` option `-a` is now deprecated. Previously, it had to be specified
+  to kill a container (with SIGKILL) which does not have its own private PID
+  namespace (so that runc would send SIGKILL to all processes). Now, this is
+  done automatically. (#3864, #3825)
+
+### Added
+
+* Support for `cgroup.kill` to kill all processes inside a container. (#3135,
+  #3825)
+* libct/cg: support SCHED_IDLE for runc cgroupfs (#3377)
+* seccomp: add support for flags (#3390)
+* Add support for `--manage-cgroups-mode ignore` in checkpoint/restore. This
+ option allows to restore a container into a different cgroup than the original
+ one. (#3546)
+* Add support for umask when exec container (#3661)
+* Add docs/spec-conformance.md (#3716)
+* Support idmap mounts as specified in the OCI runtime-spec. Currently the mount
+ mappings need to be identical to the mappings used in the user namespace
+ section. (#3717, #3750, #3939)
+* Add support for PSI stats for cgroup v2 to cgroup manager' Stats(), as well as `runc events'. (#3900)
+
+### Fixed
+
+* notify_socket.go: use sd_notify_barrier mechanism (#3291)
+* shellcheck/shfmt more files; run check-config in CI (#3378)
+* libct: eval symlink for cwd when create libcontainer config (#3384)
+* Remove tun/tap from the default device rules (#3468)
+* ci: drop docker layer caching from release job (#3483)
+* Bump golangci-lint, fix an error path (#3515)
+* ci: fix delete.bats for GHA (#3542)
+* runc update: implement memory.checkBeforeUpdate (#3579)
+* runc checkpoint: destroy only on success (#3655)
+* specconv: avoid mapping "acl" to MS_POSIXACL (#3739)
+* cg/sd: support CPUWeight=idle (aka cpu.idle=1) (#3788)
+* libct/cg: IsCgroup2UnifiedMode: don't panic (#3827)
+* libcontainer: fix private PID namespace detection when killing the container
+  (#3866, #3825)
+
+### Changed
+
+* libct: Init: remove LockOSThread (#3235)
+* Faster Intel RDT init if the feature is unavailable (#3306)
+* CHANGELOG nits (#3344)
+* libct/cg/sd: optimize and test findDeviceGroup (#3357)
+* Remove Factory and LinuxFactory (#3373)
+* ci: bump shfmt to 3.5.1, simplify CI setup (#3379)
+* libct/seccomp: enable seccomp binary tree optimization (#3405)
+* ci/gha: limit jobs permissions (#3445)
+* Decouple setting cgroup device rules from cgroup manager (#3452)
+* Do not use regexp (#3460)
+* libct/intelrdt: skip reading /proc/cpuinfo (#3485)
+* vendor: bump cilium/ebpf to v0.9.0 (#3491)
+* Refactor mountFd code (#3512)
+* seccomp: refactor flags support; add flags to features, set SPEC_ALLOW by
+ default (#3588)
+* libct/nsenter: namespace the bindfd shuffle (#3599)
+* tests/int: do not set inheritable capabilities (#3603)
+* libcontainer/cgroups: return concrete types (#3626)
+* deps: bump github.com/checkpoint-restore/go-criu to 6.3.0 (#3652)
+* build(deps): bump golang.org/x/net from 0.1.0 to 0.2.0 (#3658)
+* Enforce absolute paths for mounts (#3020, #3717)
+* libcontainer users that create and kill containers from a daemon process
+  (so that the container init is a child of that process) must now implement
+  a proper child reaper in case a container does not have its own private PID
+  namespace, as documented in `container.Signal`. (#3825)
+* Bump runtime-spec version (#3830)
+* runc-kill(8): amend the --all description (#3834)
+* features: graduate from experimental (#3861)
+* libcontainer: `container.Signal` no longer have the second `all bool`
+  argument; a need to kill all processes is now determined automatically.
+  (#3885)
+* build(deps): bump github.com/opencontainers/runtime-spec from 1.1.0-rc.3
+ to 1.1.0 (#3945)
 
 ## [1.1.8] - 2023-07-20
 
