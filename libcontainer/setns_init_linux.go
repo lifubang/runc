@@ -11,6 +11,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
+	"github.com/opencontainers-sec/go-containersec/execve"
+	"github.com/opencontainers-sec/go-containersec/path"
 	"github.com/opencontainers/runc/libcontainer/apparmor"
 	"github.com/opencontainers/runc/libcontainer/keys"
 	"github.com/opencontainers/runc/libcontainer/seccomp"
@@ -135,9 +137,17 @@ func (l *linuxSetnsInit) Init() error {
 		return &os.PathError{Op: "close log pipe", Path: "fd " + strconv.Itoa(l.logFd), Err: err}
 	}
 
-	if l.dmzExe != nil {
-		l.config.Args[0] = name
-		return system.Fexecve(l.dmzExe.Fd(), l.config.Args, os.Environ())
+	fd, cmd, args, env, err := execve.GetSecExecve(name, l.config.Args, os.Environ())
+	if err != nil {
+		return err
 	}
-	return system.Exec(name, l.config.Args, os.Environ())
+	jail, err := path.IsPathInJail(cmd)
+	if err != nil {
+		return err
+	}
+	if !jail {
+		_ = unix.Close(fd)
+		return fmt.Errorf("can't find %s in the current file system", cmd)
+	}
+	return system.Fexecve(uintptr(fd), args, env)
 }

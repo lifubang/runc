@@ -12,6 +12,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
+	"github.com/opencontainers-sec/go-containersec/execve"
+	"github.com/opencontainers-sec/go-containersec/path"
 	"github.com/opencontainers/runc/libcontainer/apparmor"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/keys"
@@ -278,9 +280,17 @@ func (l *linuxStandardInit) Init() error {
 		return err
 	}
 
-	if l.dmzExe != nil {
-		l.config.Args[0] = name
-		return system.Fexecve(l.dmzExe.Fd(), l.config.Args, os.Environ())
+	fd, cmd, args, env, err := execve.GetSecExecve(name, l.config.Args, os.Environ())
+	if err != nil {
+		return err
 	}
-	return system.Exec(name, l.config.Args, os.Environ())
+	jail, err := path.IsPathInJail(cmd)
+	if err != nil {
+		return err
+	}
+	if !jail {
+		_ = unix.Close(fd)
+		return fmt.Errorf("can't find %s in the current file system", cmd)
+	}
+	return system.Fexecve(uintptr(fd), args, env)
 }
