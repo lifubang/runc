@@ -23,10 +23,8 @@ import (
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
 	"github.com/opencontainers/runc/libcontainer/configs"
-	"github.com/opencontainers/runc/libcontainer/dmz"
 	"github.com/opencontainers/runc/libcontainer/intelrdt"
 	"github.com/opencontainers/runc/libcontainer/system"
-	"github.com/opencontainers/runc/libcontainer/system/kernelversion"
 	"github.com/opencontainers/runc/libcontainer/utils"
 )
 
@@ -443,117 +441,13 @@ func (c *Container) includeExecFifo(cmd *exec.Cmd) error {
 	return nil
 }
 
-// No longer needed in Go 1.21.
-func slicesContains[S ~[]E, E comparable](slice S, needle E) bool {
-	for _, val := range slice {
-		if val == needle {
-			return true
-		}
-	}
-	return false
-}
-
-func isDmzBinarySafe(c *configs.Config) bool {
-	if !dmz.WorksWithSELinux(c) {
-		return false
-	}
-
-	// Because we set the dumpable flag in nsexec, the only time when it is
-	// unsafe to use runc-dmz is when the container process would be able to
-	// race against "runc init" and bypass the ptrace_may_access() checks.
-	//
-	// This is only the case if the container processes could have
-	// CAP_SYS_PTRACE somehow (i.e. the capability is present in the bounding,
-	// inheritable, or ambient sets). Luckily, most containers do not have this
-	// capability.
-	if c.Capabilities == nil ||
-		(!slicesContains(c.Capabilities.Bounding, "CAP_SYS_PTRACE") &&
-			!slicesContains(c.Capabilities.Inheritable, "CAP_SYS_PTRACE") &&
-			!slicesContains(c.Capabilities.Ambient, "CAP_SYS_PTRACE")) {
-		return true
-	}
-
-	// Since Linux 4.10 (see bfedb589252c0) user namespaced containers cannot
-	// access /proc/$pid/exe of runc after it joins the namespace (until it
-	// does an exec), regardless of the capability set. This has been
-	// backported to other distribution kernels, but there's no way of checking
-	// this cheaply -- better to be safe than sorry here.
-	linux410 := kernelversion.KernelVersion{Kernel: 4, Major: 10}
-	if ok, err := kernelversion.GreaterEqualThan(linux410); ok && err == nil {
-		if c.Namespaces.Contains(configs.NEWUSER) {
-			return true
-		}
-	}
-
-	// Assume it's unsafe otherwise.
-	return false
-}
-
 func (c *Container) newParentProcess(p *Process) (parentProcess, error) {
 	comm, err := newProcessComm()
 	if err != nil {
 		return nil, err
 	}
 
-	// Make sure we use a new safe copy of /proc/self/exe or the runc-dmz
-	// binary each time this is called, to make sure that if a container
-	// manages to overwrite the file it cannot affect other containers on the
-	// system. For runc, this code will only ever be called once, but
-	// libcontainer users might call this more than once.
-	p.closeClonedExes()
-	var (
-		exePath string
-		// only one of dmzExe or safeExe are used at a time
-		dmzExe, safeExe *os.File
-	)
-	if dmz.IsSelfExeCloned() {
-		// /proc/self/exe is already a cloned binary -- no need to do anything
-		logrus.Debug("skipping binary cloning -- /proc/self/exe is already cloned!")
-		// We don't need to use /proc/thread-self here because the exe mm of a
-		// thread-group is guaranteed to be the same for all threads by
-		// definition. This lets us avoid having to do runtime.LockOSThread.
-		exePath = "/proc/self/exe"
-	} else {
-		var err error
-		if isDmzBinarySafe(c.config) {
-			dmzExe, err = dmz.Binary(c.stateDir)
-			if err == nil {
-				// We can use our own executable without cloning if we are
-				// using runc-dmz. We don't need to use /proc/thread-self here
-				// because the exe mm of a thread-group is guaranteed to be the
-				// same for all threads by definition. This lets us avoid
-				// having to do runtime.LockOSThread.
-				exePath = "/proc/self/exe"
-				p.clonedExes = append(p.clonedExes, dmzExe)
-				logrus.Debug("runc-dmz: using runc-dmz") // used for tests
-			} else if errors.Is(err, dmz.ErrNoDmzBinary) {
-				logrus.Debug("runc-dmz binary not embedded in runc binary, falling back to /proc/self/exe clone")
-			} else if err != nil {
-				return nil, fmt.Errorf("failed to create runc-dmz binary clone: %w", err)
-			}
-		} else {
-			// If the configuration makes it unsafe to use runc-dmz, pretend we
-			// don't have it embedded so we do /proc/self/exe cloning.
-			logrus.Debug("container configuration unsafe for runc-dmz, falling back to /proc/self/exe clone")
-			err = dmz.ErrNoDmzBinary
-		}
-		if errors.Is(err, dmz.ErrNoDmzBinary) {
-			safeExe, err = dmz.CloneSelfExe(c.stateDir)
-			if err != nil {
-				return nil, fmt.Errorf("unable to create safe /proc/self/exe clone for runc init: %w", err)
-			}
-			exePath = "/proc/self/fd/" + strconv.Itoa(int(safeExe.Fd()))
-			p.clonedExes = append(p.clonedExes, safeExe)
-			logrus.Debug("runc-dmz: using /proc/self/exe clone") // used for tests
-		}
-		// Just to make sure we don't run without protection.
-		if dmzExe == nil && safeExe == nil {
-			// This should never happen.
-			return nil, fmt.Errorf("[internal error] attempted to spawn a container with no /proc/self/exe protection")
-		}
-	}
-
-	cmd := exec.Command(exePath, "init")
+	cmd := exec.Command("/proc/self/exe", "init")
 	cmd.Args[0] = os.Args[0]
 	cmd.Stdin = p.Stdin
 	cmd.Stdout = p.Stdout
@@ -580,12 +474,6 @@ func (c *Container) newParentProcess(p *Process) (parentProcess, error) {
 		"_LIBCONTAINER_SYNCPIPE="+strconv.Itoa(stdioFdCount+len(cmd.ExtraFiles)-1),
 	)
 
-	if dmzExe != nil {
-		cmd.ExtraFiles = append(cmd.ExtraFiles, dmzExe)
-		cmd.Env = append(cmd.Env,
-			"_LIBCONTAINER_DMZEXEFD="+strconv.Itoa(stdioFdCount+len(cmd.ExtraFiles)-1))
-	}
-
 	cmd.ExtraFiles = append(cmd.ExtraFiles, comm.logPipeChild)
 	cmd.Env = append(cmd.Env,
 		"_LIBCONTAINER_LOGPIPE="+strconv.Itoa(stdioFdCount+len(cmd.ExtraFiles)-1))
@@ -598,18 +486,6 @@ func (c *Container) newParentProcess(p *Process) (parentProcess, error) {
 		cmd.Env = append(cmd.Env,
 			"_LIBCONTAINER_PIDFD_SOCK="+strconv.Itoa(stdioFdCount+len(cmd.ExtraFiles)-1),
 		)
-	}
-
-	if safeExe != nil {
-		// Due to a Go stdlib bug, we need to add safeExe to the set of
-		// ExtraFiles otherwise it is possible for the stdlib to clobber the fd
-		// during forkAndExecInChild1 and replace it with some other file that
-		// might be malicious. This is less than ideal (because the descriptor
-		// will be non-O_CLOEXEC) however we have protections in "runc init" to
-		// stop us from leaking extra file descriptors.
-		//
-		// See <https://github.com/golang/go/issues/61751>.
-		cmd.ExtraFiles = append(cmd.ExtraFiles, safeExe)
 	}
 
 	// NOTE: when running a container with no PID namespace and the parent
