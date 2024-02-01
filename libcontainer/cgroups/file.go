@@ -86,7 +86,7 @@ var (
 func prepareOpenat2() error {
 	prepOnce.Do(func() {
 		fd, err := unix.Openat2(-1, cgroupfsDir, &unix.OpenHow{
-			Flags: unix.O_DIRECTORY | unix.O_PATH,
+			Flags: unix.O_DIRECTORY | unix.O_PATH | unix.O_CLOEXEC,
 		})
 		if err != nil {
 			prepErr = &os.PathError{Op: "openat2", Path: cgroupfsDir, Err: err}
