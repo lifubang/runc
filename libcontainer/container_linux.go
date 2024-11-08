@@ -377,9 +377,13 @@ func (c *Container) start(process *Process) (retErr error) {
 
 // Signal sends a specified signal to container's init.
 //
-// When s is SIGKILL and the container does not have its own PID namespace, all
-// the container's processes are killed. In this scenario, the libcontainer
+// When s is SIGKILL:
+// 1. If the container does not have its own PID namespace, all the
+// container's processes are killed. In this scenario, the libcontainer
 // user may be required to implement a proper child reaper.
+// 2. Otherwise, we just send the SIGKILL signal to the init process,
+// but we don't wait the init process exit. If you want to wait it,
+// please use c.KillAndWaitExit instead.
 func (c *Container) Signal(s os.Signal) error {
 	c.m.Lock()
 	defer c.m.Unlock()
@@ -429,6 +433,80 @@ func (c *Container) signal(s os.Signal) error {
 		}
 	}
 	return nil
+}
+
+func (c *Container) killViaPidfd() error {
+	pidfd, err := unix.PidfdOpen(c.initProcess.pid(), 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(pidfd)
+
+	epollfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(epollfd)
+
+	event := unix.EpollEvent{
+		Events: unix.EPOLLIN,
+		Fd:     int32(pidfd),
+	}
+	if err := unix.EpollCtl(epollfd, unix.EPOLL_CTL_ADD, pidfd, &event); err != nil {
+		return err
+	}
+
+	// We don't need unix.PidfdSendSignal because go runtime will use it if possible.
+	_ = c.Signal(unix.SIGKILL)
+
+	events := make([]unix.EpollEvent, 1)
+	for {
+		// Set the timeout to 10s, the same as in kill below.
+		n, err := unix.EpollWait(epollfd, events, 10000)
+		if err != nil {
+			if err == unix.EINTR {
+				continue
+			}
+			return err
+		}
+
+		if n == 0 {
+			return errors.New("container init still running")
+		}
+
+		if n > 0 {
+			event := events[0]
+			if event.Fd == int32(pidfd) {
+				return nil
+			}
+		}
+	}
+}
+
+func (c *Container) kill() error {
+	_ = c.Signal(unix.SIGKILL)
+	for i := 0; i < 100; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if err := c.Signal(unix.Signal(0)); err != nil {
+			return nil
+		}
+	}
+	return errors.New("container init still running")
+}
+
+// KillAndWaitExit kills the container and waits for the init process to exit.
+func (c *Container) KillAndWaitExit() error {
+	// When a container doesn't have a private pidns, we have to kill all processes
+	// in the cgroup, it's more simpler to use `cgroup.kill` or `unix.Kill`.
+	if c.config.Namespaces.IsPrivate(configs.NEWPID) {
+		err := c.killViaPidfd()
+		if err == nil {
+			return nil
+		}
+
+		logrus.Debugf("pidfd & epoll failed, falling back to unix.Signal: %v", err)
+	}
+	return c.kill()
 }
 
 func (c *Container) createExecFifo() (retErr error) {
