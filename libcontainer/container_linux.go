@@ -1121,12 +1121,6 @@ func (c *Container) bootstrapData(cloneFlags uintptr, nsMaps map[configs.Namespa
 		})
 	}
 
-	// write rootless
-	r.AddData(&Boolmsg{
-		Type:  RootlessEUIDAttr,
-		Value: c.config.RootlessEUID,
-	})
-
 	// write boottime and monotonic time ns offsets only when we are not joining an existing time ns
 	_, joinExistingTime := nsMaps[configs.NEWTIME]
 	if !joinExistingTime && c.config.TimeOffsets != nil {

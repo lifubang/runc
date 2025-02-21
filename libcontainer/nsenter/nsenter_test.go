@@ -233,7 +233,10 @@ func startMockProcessParent(syncSock *os.File) (*mockProcessParent, chan error) 
 
 	go (func() {
 		ch <- libcontainer.ParseNsExecSync(syncSock, func(msg libcontainer.NsExecSyncMsg) error {
-			if msg == libcontainer.SyncRecvPidPls {
+			switch msg {
+			case libcontainer.SyncUsermapPls:
+				return libcontainer.AckNsExecSync(syncSock, libcontainer.SyncUsermapAck)
+			case libcontainer.SyncRecvPidPls:
 				var pid uint32
 				if err := binary.Read(syncSock, nl.NativeEndian(), &pid); err != nil {
 					return err

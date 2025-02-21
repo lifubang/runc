@@ -119,7 +119,7 @@ func (c *processComm) closeChild() {
 
 func (c *processComm) closeParent() {
 	_ = c.initSockParent.Close()
-	_ = c.stage1SockChild.Close()
+	_ = c.stage1SockParent.Close()
 	_ = c.syncSockParent.Close()
 	// c.logPipeParent is kept alive for ForwardLogs
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/opencontainers/runc/libcontainer/system"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink/nl"
-	"golang.org/x/sys/unix"
 )
 
 // NsExecSyncMsg is used for communication between the parent and child during
@@ -30,6 +29,14 @@ const (
 const bufSize = 4
 
 // setupNsExec is used to help nsexec to setup the container and wait the container's pid.
+//
+// This function implements what was previously the stage-0 (parent) process in nsexec.c.
+// Moving this logic to Go provides several benefits:
+//   - Eliminates one clone() call, reducing process management complexity.
+//   - Removes async-signal-safety concerns for the moved code (Go runtime handles signals).
+//   - Makes the logic unit-testable and easier to maintain.
+//   - The remaining C code in nsexec.c only handles namespace operations that can't be
+//     easily done in Go (such as clone with CLONE_PARENT and the setjmp/longjmp flow).
 func (s *containerProcess) setupNsExec(syncSock *os.File) error {
 	logrus.Debugf("waiting nsexec to report the container's pid")
 	err := ParseNsExecSync(syncSock, func(msg NsExecSyncMsg) error {
@@ -139,7 +146,8 @@ func AckNsExecSync(f *os.File, msg NsExecSyncMsg) error {
 	var buf [bufSize]byte
 	native := nl.NativeEndian()
 	native.PutUint32(buf[:], uint32(msg))
-	if _, err := unix.Write(int(f.Fd()), buf[:]); err != nil {
+	// Use f.Write instead of unix.Write to handle EINTR automatically.
+	if _, err := f.Write(buf[:]); err != nil {
 		logrus.Debugf("failed to write message to nsexec: %v", err)
 		return err
 	}

@@ -184,6 +184,45 @@ static uint32_t readint32(char *buf)
 	return *(uint32_t *) buf;
 }
 
+static inline void sane_kill(pid_t pid, int signum)
+{
+	if (pid <= 0)
+		return;
+
+	int saved_errno = errno;
+	kill(pid, signum);
+	errno = saved_errno;
+}
+
+__attribute__((noreturn))
+static void iobail(int got, int want, const char *errmsg, int pid1, int pid2)
+{
+	sane_kill(pid1, SIGKILL);
+	sane_kill(pid2, SIGKILL);
+	if (got < 0)
+		bail("%s", errmsg);
+	/* Short read or write. */
+	bailx("%s (got %d of %d bytes)", errmsg, got, want);
+}
+
+static void xread(int fd, void *buf, size_t nbytes, const char *errmsg, int pid1, int pid2)
+{
+	ssize_t len;
+
+	len = read(fd, buf, nbytes);
+	if (len != nbytes)
+		iobail(len, nbytes, errmsg, pid1, pid2);
+}
+
+static void xwrite(int fd, void *buf, size_t nbytes, const char *errmsg, int pid1, int pid2)
+{
+	ssize_t len;
+
+	len = write(fd, buf, nbytes);
+	if (len != nbytes)
+		iobail(len, nbytes, errmsg, pid1, pid2);
+}
+
 static void nl_parse(int fd, struct nlconfig_t *config)
 {
 	size_t size;
@@ -463,45 +502,6 @@ void join_namespaces(char *nsspec)
 	__close_namespaces(to_join, joined, ns_list, ns_len);
 }
 
-static inline void sane_kill(pid_t pid, int signum)
-{
-	if (pid <= 0)
-		return;
-
-	int saved_errno = errno;
-	kill(pid, signum);
-	errno = saved_errno;
-}
-
-__attribute__((noreturn))
-static void iobail(int got, int want, const char *errmsg, int pid1, int pid2)
-{
-	sane_kill(pid1, SIGKILL);
-	sane_kill(pid2, SIGKILL);
-	if (got < 0)
-		bail("%s", errmsg);
-	/* Short read or write. */
-	bailx("%s (got %d of %d bytes)", errmsg, got, want);
-}
-
-static void xread(int fd, void *buf, size_t nbytes, const char *errmsg, int pid1, int pid2)
-{
-	ssize_t len;
-
-	len = read(fd, buf, nbytes);
-	if (len != nbytes)
-		iobail(len, nbytes, errmsg, pid1, pid2);
-}
-
-static void xwrite(int fd, void *buf, size_t nbytes, const char *errmsg, int pid1, int pid2)
-{
-	ssize_t len;
-
-	len = write(fd, buf, nbytes);
-	if (len != nbytes)
-		iobail(len, nbytes, errmsg, pid1, pid2);
-}
-
 void try_unshare(int flags, const char *msg)
 {
 	write_log(DEBUG, "unshare %s", msg);
@@ -654,16 +654,43 @@ void nsexec(void)
 			prctl(PR_SET_NAME, (unsigned long)"runc:[1:CHILD]", 0, 0, 0);
 			write_log(DEBUG, "~> nsexec stage-1");
 
-			if (config.namespaces) {
-				write_log(DEBUG, "setns: setting namespaces");
+			/*
+			 * We need to setns first. We cannot do this earlier (in stage 0)
+			 * because of the fact that we forked to get here (the PID of
+			 * [stage 2: STAGE_INIT]) would be meaningless). We could send it
+			 * using cmsg(3) but that's just annoying.
+			 */
+			if (config.namespaces)
+				join_namespaces(config.namespaces);
+
+			/*
+			 * Deal with user namespaces first. They are quite special, as they
+			 * affect our ability to unshare other namespaces and are used as
+			 * context for privilege checks.
+			 *
+			 * We don't unshare all namespaces in one go. The reason for this
+			 * is that, while the kernel documentation may claim otherwise,
+			 * there are certain cases where unsharing all namespaces at once
+			 * will result in namespace objects being owned incorrectly.
+			 * Ideally we should just fix these kernel bugs, but it's better to
+			 * be safe than sorry, and fix them separately.
+			 *
+			 * A specific case of this is that the SELinux label of the
+			 * internal kern-mount that mqueue uses will be incorrect if the
+			 * UTS namespace is cloned before the USER namespace is mapped.
+			 * I've also heard of similar problems with the network namespace
+			 * in some scenarios. This also mirrors how LXC deals with this
+			 * problem.
+			 */
+			if (config.cloneflags & CLONE_NEWUSER) {
+				try_unshare(CLONE_NEWUSER, "user namespace");
+				config.cloneflags &= ~CLONE_NEWUSER;
 
 				/*
-				 * If we're joining a user namespace, there are a few things
-				 * that need to be done. First, we have to make sure that
-				 * stage-0 can actually write to our /proc files. So we make
-				 * ourselves dumpable.
+				 * We need to set ourselves as dumpable temporarily so that the
+				 * parent process can write to our procfs files.
 				 */
-				if (config.cloneflags & CLONE_NEWUSER) {
+				if (config.namespaces) {
 					write_log(DEBUG, "temporarily set process as dumpable");
 					if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0)
 						bail("failed to temporarily set process as dumpable");
@@ -774,20 +801,6 @@ void nsexec(void)
 			/* For debugging. */
 			prctl(PR_SET_NAME, (unsigned long)"runc:[2:INIT]", 0, 0, 0);
 			write_log(DEBUG, "~> nsexec stage-2");
-
-			if (setsid() < 0)
-				bail("setsid failed");
-
-			if (setuid(0) < 0)
-				bail("setuid failed");
-
-			if (setgid(0) < 0)
-				bail("setgid failed");
-
-			if (!config.is_rootless_euid && config.is_setgroup) {
-				if (setgroups(0, NULL) < 0)
-					bail("setgroups failed");
-			}
 
 			close(syncfd);
 
