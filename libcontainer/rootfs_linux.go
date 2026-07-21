@@ -338,10 +338,11 @@ func mountCgroupV1(m *mountEntry, c *mountConfig) error {
 			}
 		} else {
 			subEntry := mountEntry{Mount: b}
-			defer subEntry.cleanup()
 			if err := mountToRootfs(c, &subEntry); err != nil {
+				subEntry.cleanup()
 				return err
 			}
+			subEntry.cleanup()
 		}
 	}
 	for _, mc := range merged {
@@ -359,9 +360,7 @@ func mountCgroupV1(m *mountEntry, c *mountConfig) error {
 }
 
 func mountCgroupV2(m *mountEntry, c *mountConfig) error {
-	err := utils.WithProcfdFile(m.dstFile, func(dstFd string) error {
-		return mountViaFds(m.Source, nil, m.Destination, dstFd, "cgroup2", uintptr(m.Flags), m.Data)
-	})
+	err := m.mountPropagate(c.root, c.label)
 	if err == nil || (!errors.Is(err, unix.EPERM) && !errors.Is(err, unix.EBUSY)) {
 		return err
 	}
@@ -391,7 +390,8 @@ func mountCgroupV2(m *mountEntry, c *mountConfig) error {
 		// Mask `/sys/fs/cgroup` to ensure it is read-only, even when `/sys` is mounted
 		// with `rbind,ro` (`runc spec --rootless` produces `rbind,ro` for `/sys`).
 		err = utils.WithProcfdFile(m.dstFile, func(procfd string) error {
-			return maskDir(procfd, c.label)
+			_, err := maskDir(m.dstFile, procfd, c.label)
+			return err
 		})
 	}
 	return err
@@ -1216,17 +1216,34 @@ func verifyDevNull(f *os.File) error {
 }
 
 // maskDir mounts a read-only tmpfs on top of the specified path.
-func maskDir(path, mountLabel string) error {
-	err := mount("tmpfs", path, "tmpfs", unix.MS_RDONLY, label.FormatMountLabel("nr_blocks=1,nr_inodes=1", mountLabel))
-	if err != nil {
+func maskDir(dstFile *os.File, dstPath, mountLabel string) (*os.File, error) {
+	tmpfs := &configs.Mount{
+		Source:      "tmpfs",
+		Device:      "tmpfs",
+		Destination: dstPath,
+		Flags:       unix.MS_RDONLY,
+		Data:        "nr_blocks=1,nr_inodes=1",
+	}
+	entry := mountEntry{
+		Mount:   tmpfs,
+		dstFile: dstFile,
+	}
+	entry.initMountSourceFd(entry.Flags)
+	if err := utils.WithProcfdFile(entry.dstFile, func(dstFd string) error {
+		return mountViaFds(entry.Mount.Source, entry.srcFile, entry.Mount.Destination, dstFd, entry.Mount.Device, uintptr(entry.Mount.Flags), label.FormatMountLabel(entry.Mount.Data, mountLabel))
+	}); err != nil {
 		// On most kernels `nr_inodes=1` works fine. However, Ubuntu 20.04 (Focal) with
 		// the official 5.4 kernel carries a private patch in "mm/shmem.c" that rejects
 		// `nr_inodes<2`, so retry with `nr_inodes=2` here.
 		// For reference, search for "case Opt_nr_inodes" in:
 		// https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/focal/plain/mm/shmem.c?h=Ubuntu-5.4.0-216.236
-		err = mount("tmpfs", path, "tmpfs", unix.MS_RDONLY, label.FormatMountLabel("nr_blocks=1,nr_inodes=2", mountLabel))
+		err = mount("tmpfs", dstPath, "tmpfs", unix.MS_RDONLY, label.FormatMountLabel("nr_blocks=1,nr_inodes=2", mountLabel))
+		return nil, err
 	}
-	return err
+	if entry.isDetachedMount() {
+		return entry.srcFile.file, nil
+	}
+	return nil, nil
 }
 
 // maskPaths masks the top of the specified paths inside a container to avoid
@@ -1298,22 +1315,26 @@ func maskPaths(rootFs string, paths []string, mountLabel string) error {
 				}
 			}
 			if bindFailed || sharedMaskSrc == nil {
-				err = maskDir(path, mountLabel)
+				fd, err := maskDir(dstFh, path, mountLabel)
 				if err == nil && !bindFailed && sharedMaskSrc == nil {
 					// Establish this mount as the reusable shared source. reopenAfterMount
 					// resolves the underlying inode via procfs and re-opens it through
 					// rootFd, so the resulting fd is anchored to the real path inside the
 					// container rootfs even if path was a /proc/self/fd/N alias.
-					rootFd, err := os.OpenFile(rootFs, unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_PATH, 0)
-					if err != nil {
-						return fmt.Errorf("open rootfs handle for masked paths: %w", err)
+					if fd != nil {
+						sharedMaskFile = fd
+					} else {
+						rootFd, err := os.OpenFile(rootFs, unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_PATH, 0)
+						if err != nil {
+							return fmt.Errorf("open rootfs handle for masked paths: %w", err)
+						}
+						reopened, err := reopenAfterMount(rootFd, dstFh, unix.O_PATH|unix.O_CLOEXEC)
+						rootFd.Close()
+						if err != nil {
+							return fmt.Errorf("can't reopen shared directory mask: %w", err)
+						}
+						sharedMaskFile = reopened
 					}
-					reopened, err := reopenAfterMount(rootFd, dstFh, unix.O_PATH|unix.O_CLOEXEC)
-					rootFd.Close()
-					if err != nil {
-						return fmt.Errorf("can't reopen shared directory mask: %w", err)
-					}
-					sharedMaskFile = reopened
 					sharedMaskSrc = &mountSource{Type: mountSourcePlain, file: sharedMaskFile}
 				}
 			}

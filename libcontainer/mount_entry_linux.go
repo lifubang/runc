@@ -12,6 +12,7 @@ import (
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/utils"
 	"github.com/opencontainers/selinux/go-selinux/label"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -58,6 +59,10 @@ func (m mountEntry) srcStatfs() (*unix.Statfs_t, error) {
 		}
 	}
 	return &st, nil
+}
+
+func (m mountEntry) isDetachedMount() bool {
+	return m.srcFile != nil && (m.srcFile.Type == mountSourceOpenTree || m.srcFile.Type == mountSourceFsOpen)
 }
 
 func (m *mountEntry) createOpenMountpoint(root *os.File) (Err error) {
@@ -169,6 +174,17 @@ func reopenAfterMount(rootFd, f *os.File, flags int) (_ *os.File, Err error) {
 	return reopened, nil
 }
 
+// initMountSourceFd initializes the mount source file descriptor if it is nil and the new mount API is available.
+func (m *mountEntry) initMountSourceFd(flags int) {
+	if hasNewMountAPI() && (m.srcFile == nil || m.srcFile.file == nil) {
+		if source, err := createDetachedMountSource(m.Mount, flags); err == nil {
+			m.srcFile = source
+		} else {
+			logrus.Debugf("new mount api error: %v", err)
+		}
+	}
+}
+
 // Do the mount operation followed by additional mounts required to take care
 // of propagation flags. This will always be scoped inside the container rootfs.
 func (m *mountEntry) mountPropagate(rootFd *os.File, mountLabel string) error {
@@ -183,6 +199,7 @@ func (m *mountEntry) mountPropagate(rootFd *os.File, mountLabel string) error {
 	if m.Device == "tmpfs" || pathrs.LexicallyCleanPath(m.Destination) == "/dev" {
 		flags &= ^unix.MS_RDONLY
 	}
+	m.initMountSourceFd(flags)
 
 	if err := utils.WithProcfdFile(m.dstFile, func(dstFd string) error {
 		return mountViaFds(m.Source, m.srcFile, m.Destination, dstFd, m.Device, uintptr(flags), data)
@@ -190,19 +207,21 @@ func (m *mountEntry) mountPropagate(rootFd *os.File, mountLabel string) error {
 		return err
 	}
 
-	// We need to re-open the mountpoint after doing the mount, in order for us
-	// to operate on the new mount we just created. However, we cannot use
-	// pathrs.Reopen because we need to re-resolve from the parent directory to
-	// get a new handle to the top mount.
-	//
-	// TODO: Use move_mount(2) on newer kernels so that this is no longer
-	// necessary on modern systems.
-	newDstFile, err := reopenAfterMount(rootFd, m.dstFile, unix.O_PATH)
-	if err != nil {
-		return fmt.Errorf("reopen mountpoint after mount: %w", err)
+	if m.isDetachedMount() {
+		_ = m.dstFile.Close()
+		m.dstFile = m.srcFile.file
+	} else {
+		// We need to re-open the mountpoint after doing the mount, in order for us
+		// to operate on the new mount we just created. However, we cannot use
+		// pathrs.Reopen because we need to re-resolve from the parent directory to
+		// get a new handle to the top mount.
+		newDstFile, err := reopenAfterMount(rootFd, m.dstFile, unix.O_PATH)
+		if err != nil {
+			return fmt.Errorf("reopen mountpoint after mount: %w", err)
+		}
+		_ = m.dstFile.Close()
+		m.dstFile = newDstFile
 	}
-	_ = m.dstFile.Close()
-	m.dstFile = newDstFile
 
 	// Apply the propagation flags on the new mount.
 	if err := utils.WithProcfdFile(m.dstFile, func(dstFd string) error {
