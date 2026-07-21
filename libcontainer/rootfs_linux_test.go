@@ -18,7 +18,7 @@ func TestCheckMountDestInProc(t *testing.T) {
 		},
 	}
 	dest := "/rootfs/proc/sys"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err == nil {
 		t.Fatal("destination inside proc should return an error")
 	}
@@ -33,7 +33,7 @@ func TestCheckProcMountOnProc(t *testing.T) {
 		},
 	}
 	dest := "/rootfs/proc/"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err != nil {
 		t.Fatalf("procfs type mount on /proc should not return an error: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestCheckBindMountOnProc(t *testing.T) {
 		},
 	}
 	dest := "/rootfs/proc/"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err != nil {
 		t.Fatalf("bind-mount of procfs on top of /proc should not return an error (for now): %v", err)
 	}
@@ -66,7 +66,7 @@ func TestCheckTrickyMountOnProc(t *testing.T) {
 		},
 	}
 	dest := "/rootfs/proc/"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err == nil {
 		t.Fatalf("dodgy overlayfs mount on top of /proc should return an error")
 	}
@@ -83,7 +83,7 @@ func TestCheckTrickyBindMountOnProc(t *testing.T) {
 		},
 	}
 	dest := "/rootfs/proc/"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err == nil {
 		t.Fatalf("dodgy bind-mount on top of /proc should return an error")
 	}
@@ -98,7 +98,7 @@ func TestCheckMountDestInSys(t *testing.T) {
 		},
 	}
 	dest := "/rootfs//sys/fs/cgroup"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err != nil {
 		t.Fatalf("destination inside /sys should not return an error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestCheckMountDestFalsePositive(t *testing.T) {
 		},
 	}
 	dest := "/rootfs/sysfiles/fs/cgroup"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestCheckMountDestNsLastPid(t *testing.T) {
 		},
 	}
 	dest := "/rootfs/proc/sys/kernel/ns_last_pid"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err != nil {
 		t.Fatalf("/proc/sys/kernel/ns_last_pid should not return an error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestCheckCryptoFipsEnabled(t *testing.T) {
 		},
 	}
 	dest := "/rootfs/proc/sys/crypto/fips_enabled"
-	err := checkProcMount("/rootfs", dest, m)
+	err := checkProcMount("/rootfs", dest, &m)
 	if err != nil {
 		t.Fatalf("/proc/sys/crypto/fips_enabled should not return an error: %v", err)
 	}
