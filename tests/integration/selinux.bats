@@ -8,7 +8,7 @@ function setup() {
 		skip "requires SELinux enabled"
 	fi
 
-	setup_busybox
+	setup_debian
 
 	# Use a copy of runc binary with proper selinux label set.
 	cp "$RUNC" ./runc
@@ -85,6 +85,36 @@ function enable_userns() {
 			| .process.args = ["/bin/true"]'
 	runc run tst
 	[ "$status" -eq 0 ]
+}
+
+@test "check mount label" {
+	LABEL="system_u:system_r:container_t:s0:c4,c5"
+	MOUNTLABEL="system_u:object_r:container_file_t:s0:c344,c805"
+	update_config '	  .process.selinuxLabel |= "'"$LABEL"'"
+			| .process.args = ["sleep", "infinity"]
+			| .linux.mountLabel="'"$MOUNTLABEL"'"
+			| .mounts += [{
+					source: ".",
+					destination: "/tmp/bind",
+					options: ["bind"]
+				}]'
+	runc run -d --console-socket "$CONSOLE_SOCKET" tst
+	[ "$status" -eq 0 ]
+
+	runc exec tst ls -Zd /sys/fs/cgroup
+
+	runc exec tst ls -Zd /dev
+
+	runc exec tst ls -Zd /tmp/bind
+
+	runc exec tst mount
+	[ "$status" -eq 0 ]
+
+	runc exec tst findmnt --noheadings -o OPTIONS -T /proc
+
+	runc exec tst findmnt --noheadings -o OPTIONS -T /tmp/bind
+	[[ "$output" == *"$MOUNTLABEL"* ]]
+	[ "$status" -eq 1 ]
 }
 
 @test "runc run (session keyring security label)" {
